@@ -4,7 +4,7 @@
         ""
     ],
     "companyName": "Kevin Luo",
-    "longName": "AMPR",
+    "longName": "AMPr - gesture based music control",
     "projectType": "native",
     "resources": {
         "media": [
@@ -47,7 +47,7 @@
         ]
     },
     "sdkVersion": "3",
-    "shortName": "AMPR",
+    "shortName": "AMPr",
     "targetPlatforms": [
         "aplite",
         "basalt",

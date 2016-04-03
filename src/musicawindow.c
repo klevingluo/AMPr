@@ -11,17 +11,27 @@ static GBitmap *s_res_media_volup_icon;
 static GBitmap *s_res_media_voldown_icon;
 static ToastLayer *toast = NULL;
 
+// predicted volume level
+static int volume_level = 100;
+static int desired_volume_level = 100;
+
+// has volume matched yet?
+static int volume_matched = 0;
+
 // diagnostic layer
 TextLayer *diag_layer;
 
 // number of accelerometer readings per second
-uint32_t num_samples = 2;
+uint32_t num_samples = 5;
 
 // some buffer for things
-static char buf[] = "__________";
+static char buf[] = "____________";
 
 // double keeps track of volume mode:
 static double volume_mode = 0.0;
+
+// keeps track if in volume adjust mode
+static int volume_adjust = 0;
 
 // double keeps track of volume mode:
 static double skip_mode = 0.0;
@@ -349,6 +359,7 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
         TextLayerSetTextRTLAware(s_AlbumTextLayer, s_RTL_AlbumSecondTextLayer, t->value->cstring, true);
         break;
       case META_VOLSTATE_KEY :
+        volume_level = t->value->int32;
         showVolumeState(t->value->int32);
         break;
     }
@@ -471,19 +482,45 @@ static void accel_data_handler(AccelData *data, uint32_t num_samples) {
     // Print it out
     APP_LOG(APP_LOG_LEVEL_INFO, "t: %llu, x: %d, y: %d, z: %d", timestamp, x, y, z);
 
-    // processing to see if volum adjustment is appropriate
-    if (abs(x) < 300 && abs(y) < 350) {
-      volume_mode -= volume_mode / 11.0;
-      volume_mode += 1.0/11.0;
+    // processing to see if volume adjustment is appropriate
+    if (x < -850) {
+      volume_mode -= volume_mode / 4.0;
+      volume_mode += 1.0/4.0;
       buf[5] = '+';
     } else {
       buf[5] = '_';
+      volume_mode -= volume_mode / 4.0;
     }
 
-    // volume up is pretty easy
-    if (z > 950) {
-      Tuplet tuple = TupletInteger(ACTION_VOLUP_KEY, 0);
-      sendToPhone(&tuple);
+    // entering volume adjust mode
+    if (volume_mode > 0.9 && volume_adjust == 0) {
+      volume_adjust = 1;
+      volume_matched = 0;
+      vibes_short_pulse();
+    }
+
+    if (volume_adjust == 1 && abs(y) > 750) {
+      volume_adjust = 0;
+      volume_matched = 0;
+    }
+    // processing volume adjust mode
+    if (volume_adjust == 1) {
+      desired_volume_level = -x/10;
+      if ((abs(desired_volume_level - volume_level)) < 10) {
+        volume_matched = 1;
+      }
+      if (volume_matched == 1) {
+        buf[10] = 'M';
+        if (desired_volume_level - volume_level > 5) {
+    	    Tuplet tuple = TupletInteger(ACTION_VOLUP_KEY, 0);
+    	    sendToPhone(&tuple);
+        } else if (desired_volume_level - volume_level < -5) {
+    	    Tuplet tuple = TupletInteger(ACTION_VOLDOWN_KEY, 0);
+    	    sendToPhone(&tuple);
+        } 
+      } else {
+        buf[10] = 'i';
+      }
     }
     
     // processing to see if skip adjustment is appropriate
@@ -494,17 +531,6 @@ static void accel_data_handler(AccelData *data, uint32_t num_samples) {
     } else {
       skip_mode -= skip_mode / 4.0;
       buf[9] = 'k';
-    }
-
-    // volume control code
-    if (volume_mode > 0.7) {
-      if (z < -500 && z > -950 ) {
-    	  Tuplet tuple = TupletInteger(ACTION_VOLDOWN_KEY, 0);
-    	  sendToPhone(&tuple);
-        buf[7] = 'v';
-      } else {
-        buf[7] = '_';
-      }
     }
 
     // skip cooldown control code
@@ -535,7 +561,7 @@ static void accel_data_handler(AccelData *data, uint32_t num_samples) {
       }
     }
 
-    // snprintf(buf, sizeof(buf), "%d", z);
+    //snprintf(buf, sizeof(buf), "%d", volume_level);
     if (volume_mode > 0.7) {
       buf[2] = 'X';
     } else {
@@ -550,6 +576,12 @@ static void accel_data_handler(AccelData *data, uint32_t num_samples) {
   }
 }
 
+static void accel_tap_handler(AccelAxisType axis, int32_t direction) {
+  // A tap event occured
+  volume_adjust = 0;
+  volume_matched = 0;
+}
+
 void show_musicawindow(void) {
   LogMessageWithTimestamp(APP_LOG_LEVEL_DEBUG, "Initializing window..");
 
@@ -561,6 +593,9 @@ void show_musicawindow(void) {
   
   // Set BT module to high responsiveness mode (NOTE: GREATLY INCREASES BATTERY USAGE!)
   app_comm_set_sniff_interval(SNIFF_INTERVAL_REDUCED);
+
+  // Subscribe to tap events
+  accel_tap_service_subscribe(accel_tap_handler);
   
   initialise_ui();
   
@@ -579,7 +614,7 @@ void show_musicawindow(void) {
   diag_layer = text_layer_create(GRect(25,50,144,40));
 
   // shows diag layer
-  // layer_add_child(window_get_root_layer(s_window), text_layer_get_layer(diag_layer));
+  layer_add_child(window_get_root_layer(s_window), text_layer_get_layer(diag_layer));
 }
 
 void hide_musicawindow(void) {
@@ -589,7 +624,10 @@ void hide_musicawindow(void) {
 
   // unlists accelerometer data stuff
   accel_data_service_unsubscribe();
-  
+
+  // Unsubscribe from tap events
+  accel_tap_service_unsubscribe();
+ 
   // Reset BT module to normal, low-power mode.
   app_comm_set_sniff_interval(SNIFF_INTERVAL_NORMAL);
 }
